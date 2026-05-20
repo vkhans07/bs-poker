@@ -284,7 +284,8 @@ function LogPanel({ logs }) {
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
-const DEFAULT_WS = "ws://localhost:3001";
+const DEFAULT_WS = window.location.hostname === "localhost" ? "ws://localhost:3001" 
+: "https://bs-poker.onrender.com";
 
 export default function BSPoker() {
   const [serverUrl, setServerUrl] = useState(DEFAULT_WS);

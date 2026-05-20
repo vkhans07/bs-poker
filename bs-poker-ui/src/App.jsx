@@ -20,7 +20,7 @@ const HAND_TYPES = [
   { type:"straight_flush",  label:"Straight Flush",    needsRanks:1, needsSuit:true  },
 ];
 const HAND_RANK_ORDER = {high_card:0,pair:1,two_pair:2,three_of_a_kind:3,straight:4,flush:5,full_house:6,four_of_a_kind:7,straight_flush:8};
-const DEFAULT_WS = "ws://localhost:3001";
+const DEFAULT_WS = window.location.hostname === "localhost" ? "ws://localhost:3001" : "https://bs-poker.onrender.com";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function claimScore(c) {
