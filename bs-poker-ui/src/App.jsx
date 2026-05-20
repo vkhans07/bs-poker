@@ -2,9 +2,9 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const RANKS = ["2","3","4","5","6","7","8","9","T","J","Q","K","A"];
-const SUITS = ["c","d","h","s"];
-const RANK_VAL = {"2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,"9":9,"T":10,"J":11,"Q":12,"K":13,"A":14};
+const RANKS     = ["2","3","4","5","6","7","8","9","T","J","Q","K","A"];
+const SUITS     = ["c","d","h","s"];
+const RANK_VAL  = {"2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,"9":9,"T":10,"J":11,"Q":12,"K":13,"A":14};
 const RANK_FULL = {"2":"Deuce","3":"Three","4":"Four","5":"Five","6":"Six","7":"Seven","8":"Eight","9":"Nine","T":"Ten","J":"Jack","Q":"Queen","K":"King","A":"Ace"};
 const SUIT_SYM  = { c:"♣", d:"♦", h:"♥", s:"♠" };
 const SUIT_NAME = { c:"Clubs", d:"Diamonds", h:"Hearts", s:"Spades" };
@@ -20,7 +20,10 @@ const HAND_TYPES = [
   { type:"straight_flush",  label:"Straight Flush",    needsRanks:1, needsSuit:true  },
 ];
 const HAND_RANK_ORDER = {high_card:0,pair:1,two_pair:2,three_of_a_kind:3,straight:4,flush:5,full_house:6,four_of_a_kind:7,straight_flush:8};
-const DEFAULT_WS = window.location.hostname === "localhost" ? "ws://localhost:3001" : "https://bs-poker.onrender.com";
+const AVATAR_COLORS   = ["#1d4ed8","#7c3aed","#0e7490","#047857","#b45309","#be123c","#6d28d9","#0f766e"];
+const DEFAULT_WS = window.location.hostname === "localhost"
+  ? "ws://localhost:3001"
+  : "wss://bs-poker.onrender.com";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function claimScore(c) {
@@ -46,20 +49,23 @@ function formatClaim(c) {
 function initials(name) {
   return (name || "?").split(" ").map(w => w[0]).join("").slice(0,2).toUpperCase();
 }
+function avatarColor(name) {
+  return AVATAR_COLORS[(name || "").charCodeAt(0) % AVATAR_COLORS.length];
+}
 
 // ─── Card ─────────────────────────────────────────────────────────────────────
-const CARD_SIZES = {
-  sm: { w:36, h:52, cornerFont:10, centerFont:20 },
-  md: { w:52, h:74, cornerFont:13, centerFont:28 },
-  lg: { w:66, h:94, cornerFont:15, centerFont:36 },
-};
+function Card({ code, size = "md", highlight = false, faceDown = false }) {
+  const sizes = {
+    sm: { w:32, h:46, cf:9,  sf:16 },
+    md: { w:48, h:68, cf:12, sf:24 },
+    lg: { w:62, h:88, cf:14, sf:30 },
+  };
+  const s = sizes[size];
 
-function Card({ code, size = "md", highlight = false }) {
-  const s = CARD_SIZES[size];
-  if (!code || code === "X") {
+  if (faceDown || !code || code === "X") {
     return (
       <div className="card card-back" style={{ width:s.w, height:s.h }}>
-        <div className="card-back-inner" />
+        <div className="card-back-pattern" />
       </div>
     );
   }
@@ -69,77 +75,135 @@ function Card({ code, size = "md", highlight = false }) {
   const red = suit === "d" || suit === "h";
   return (
     <div
-      className={`card card-face${highlight ? " card-highlight" : ""}${red ? " card-red" : " card-black"}`}
+      className={`card card-face ${red ? "card-red" : "card-black"} ${highlight ? "card-highlight" : ""}`}
       style={{ width:s.w, height:s.h }}
     >
-      <span className="card-corner card-tl" style={{ fontSize:s.cornerFont }}>
-        <span className="card-corner-rank">{display}</span>
-        <span className="card-corner-suit">{SUIT_SYM_SMALL[suit]}</span>
-      </span>
-      <span className="card-center" style={{ fontSize:s.centerFont }}>{SUIT_SYM[suit]}</span>
-      <span className="card-corner card-br" style={{ fontSize:s.cornerFont }}>
-        <span className="card-corner-rank">{display}</span>
-        <span className="card-corner-suit">{SUIT_SYM_SMALL[suit]}</span>
-      </span>
+      <div className="card-corner card-tl" style={{ fontSize:s.cf }}>
+        <div>{display}</div>
+        <div>{SUIT_SYM[suit]}</div>
+      </div>
+      <div className="card-center" style={{ fontSize:s.sf }}>{SUIT_SYM[suit]}</div>
+      <div className="card-corner card-br" style={{ fontSize:s.cf }}>
+        <div>{display}</div>
+        <div>{SUIT_SYM[suit]}</div>
+      </div>
     </div>
   );
 }
-const SUIT_SYM_SMALL = SUIT_SYM; // same symbols, just smaller via fontSize
 
-// ─── Player Chip ──────────────────────────────────────────────────────────────
-function PlayerChip({ player, isMe, isTurn, isLastClaimer, isReveal }) {
-  const danger  = player.cardCount >= 4;
-  const warning = player.cardCount === 3;
-  const avatarColors = ["#2563eb","#7c3aed","#0891b2","#059669","#d97706","#dc2626","#9333ea","#0d9488"];
-  const colorIdx = player.name ? player.name.charCodeAt(0) % avatarColors.length : 0;
+// ─── Seat (positioned around the table) ──────────────────────────────────────
+function Seat({ player, isMe, isTurn, isLastClaimer, isReveal, position }) {
+  // position: "top"|"bottom"|"left"|"right"|"top-left"|"top-right"|"bottom-left"|"bottom-right"
+  const danger  = !player.eliminated && player.cardCount >= 4;
+  const warning = !player.eliminated && player.cardCount === 3;
+
+  // Cards to show: revealed cards face-up, otherwise face-down pips
+  const cardElements = player.eliminated ? null : isReveal && player.cards
+    ? player.cards.map((c,i) => <Card key={i} code={c} size="sm" highlight />)
+    : Array(player.cardCount || 0).fill(0).map((_,i) => <Card key={i} faceDown size="sm" />);
 
   return (
     <div className={[
-      "player-chip",
-      isMe       ? "chip-me"   : "",
-      isTurn     ? "chip-turn" : "",
-      player.eliminated ? "chip-out" : "",
+      "seat",
+      `seat-${position}`,
+      isMe    ? "seat-me"   : "",
+      isTurn  ? "seat-turn" : "",
+      player.eliminated ? "seat-out" : "",
     ].filter(Boolean).join(" ")}>
 
-      <div className="chip-avatar" style={{ background: player.eliminated ? "#374151" : avatarColors[colorIdx] }}>
-        {initials(player.name)}
-        {isTurn && <div className="chip-turn-ring" />}
+      {/* Cards above/beside the seat depending on position */}
+      <div className="seat-cards">
+        {cardElements}
       </div>
 
-      <div className="chip-info">
-        <div className="chip-name">
-          {player.name}
-          {isMe && <span className="chip-you-badge">you</span>}
+      {/* Avatar + name block */}
+      <div className="seat-player">
+        <div
+          className={`seat-avatar ${isTurn ? "seat-avatar-turn" : ""}`}
+          style={{ background: player.eliminated ? "#374151" : avatarColor(player.name) }}
+        >
+          {player.eliminated ? "💀" : initials(player.name)}
         </div>
-
-        {isLastClaimer && !player.eliminated && (
-          <div className="chip-claimed-tag">CLAIMED</div>
-        )}
-
-        <div className="chip-pips">
-          {player.eliminated ? (
-            <span className="chip-out-label">💀 eliminated</span>
-          ) : player.cards && isReveal ? (
-            player.cards.map((c,i) => <Card key={i} code={c} size="sm" />)
-          ) : (
-            Array(player.cardCount || 0).fill(0).map((_,i) => (
-              <div key={i} className={[
-                "pip",
-                i === (player.cardCount-1) && danger  ? "pip-danger"  : "",
-                i === (player.cardCount-1) && warning ? "pip-warning" : "",
-              ].filter(Boolean).join(" ")} />
-            ))
-          )}
-          {!player.eliminated && !player.cardCount && !isReveal && (
-            <span className="chip-no-cards">no cards</span>
-          )}
-        </div>
-
-        {!player.eliminated && (
-          <div className={["chip-count", danger ? "count-danger" : warning ? "count-warning" : ""].filter(Boolean).join(" ")}>
-            {player.cardCount}/5 cards
+        <div className="seat-label">
+          <div className="seat-name">
+            {player.name}
+            {isMe && <span className="seat-you">you</span>}
           </div>
-        )}
+          <div className={`seat-count ${danger ? "count-danger" : warning ? "count-warning" : ""}`}>
+            {player.eliminated ? "out" : `${player.cardCount}/5`}
+          </div>
+          {isLastClaimer && !player.eliminated && (
+            <div className="seat-claimed">claimed</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Poker Table ──────────────────────────────────────────────────────────────
+const POSITION_NAMES = {
+  1: ["bottom"],
+  2: ["bottom","top"],
+  3: ["bottom","top-right","top-left"],
+  4: ["bottom","right","top","left"],
+  5: ["bottom","bottom-right","top-right","top-left","bottom-left"],
+  6: ["bottom","bottom-right","top-right","top","top-left","bottom-left"],
+  7: ["bottom","right","top-right","top","top-left","left","bottom-left"],
+  8: ["bottom","bottom-right","right","top-right","top","top-left","left","bottom-left"],
+};
+
+function PokerTable({ players, myId, turnIdx, lastClaimPlayerId, isReveal, isPlaying, currentClaim }) {
+  if (!players || players.length === 0) return (
+    <div className="table-empty">Waiting for players to join…</div>
+  );
+
+  const active = players.filter(p => !p.eliminated);
+
+  // Rotate so "me" is at bottom
+  const myIdx = players.findIndex(p => p.id === myId);
+  const rotated = myIdx >= 0
+    ? [...players.slice(myIdx), ...players.slice(0, myIdx)]
+    : players;
+
+  const n = rotated.length;
+  const positions = POSITION_NAMES[n] || POSITION_NAMES[8];
+
+  return (
+    <div className="table-container">
+      <div className="table-felt">
+        {/* Table surface */}
+        <div className="table-surface">
+          {/* Center info */}
+          <div className="table-center">
+            {currentClaim ? (
+              <>
+                <div className="table-claim-label">current claim</div>
+                <div className="table-claim-text">{formatClaim(currentClaim)}</div>
+              </>
+            ) : isPlaying ? (
+              <div className="table-claim-label">no claim yet</div>
+            ) : (
+              <div className="table-logo">🃏</div>
+            )}
+          </div>
+        </div>
+
+        {/* Seats */}
+        {rotated.map((player, i) => {
+          const activeIdx = active.findIndex(a => a.id === player.id);
+          return (
+            <Seat
+              key={player.id}
+              player={player}
+              isMe={player.id === myId}
+              isTurn={!player.eliminated && activeIdx === turnIdx && isPlaying && !isReveal}
+              isLastClaimer={player.id === lastClaimPlayerId}
+              isReveal={isReveal}
+              position={positions[i] || "top"}
+            />
+          );
+        })}
       </div>
     </div>
   );
@@ -148,12 +212,12 @@ function PlayerChip({ player, isMe, isTurn, isLastClaimer, isReveal }) {
 // ─── Claim Builder ────────────────────────────────────────────────────────────
 function ClaimBuilder({ currentClaim, onSubmit }) {
   const [handType, setHandType] = useState("pair");
-  const [rank1, setRank1] = useState("A");
-  const [rank2, setRank2] = useState("K");
-  const [suit, setSuit]   = useState("s");
-  const [error, setError] = useState("");
+  const [rank1, setRank1]       = useState("A");
+  const [rank2, setRank2]       = useState("K");
+  const [suit, setSuit]         = useState("s");
+  const [error, setError]       = useState("");
 
-  const htDef = HAND_TYPES.find(h => h.type === handType);
+  const htDef    = HAND_TYPES.find(h => h.type === handType);
   const rankOpts = [...RANKS].reverse();
 
   function submit() {
@@ -162,46 +226,35 @@ function ClaimBuilder({ currentClaim, onSubmit }) {
       ranks: htDef.needsRanks === 2 ? [rank1, rank2] : [rank1],
       suit: htDef.needsSuit ? suit : undefined,
     };
-    if (htDef.needsRanks === 2 && rank1 === rank2)                           return setError("Ranks must be different");
-    if (handType === "two_pair" && RANK_VAL[rank1] <= RANK_VAL[rank2])       return setError("First rank must be higher");
-    if (handType === "full_house" && rank1 === rank2)                         return setError("Ranks must differ");
-    if (handType === "straight" && RANK_VAL[rank1] < 6)                      return setError("Straight needs a high card of 6 or above");
-    if (currentClaim && claimScore(claim) <= claimScore(currentClaim))        return setError("Must beat: " + formatClaim(currentClaim));
+    if (htDef.needsRanks === 2 && rank1 === rank2)                     return setError("Ranks must be different");
+    if (handType === "two_pair" && RANK_VAL[rank1] <= RANK_VAL[rank2]) return setError("First rank must be higher");
+    if (handType === "straight" && RANK_VAL[rank1] < 6)                return setError("Straight needs high card ≥ 6");
+    if (currentClaim && claimScore(claim) <= claimScore(currentClaim)) return setError("Must beat: " + formatClaim(currentClaim));
     setError("");
     onSubmit(claim);
   }
-
-  const rank1Label = handType === "full_house" ? "Three of" : handType === "two_pair" ? "High pair" : "Rank";
-  const rank2Label = handType === "full_house" ? "Pair of" : "Low pair";
 
   return (
     <div className="builder">
       <div className="builder-header">
         <span className="builder-title">Your Move</span>
-        {currentClaim && (
-          <span className="builder-beat">Beat: <strong>{formatClaim(currentClaim)}</strong></span>
-        )}
+        {currentClaim && <span className="builder-beat">Beat: <strong>{formatClaim(currentClaim)}</strong></span>}
       </div>
-
       <div className="builder-row">
-        {/* Hand type */}
         <div className="field-group">
           <label className="field-label">Hand</label>
           <div className="select-wrap">
-            <select
-              className="custom-select"
-              value={handType}
-              onChange={e => { setHandType(e.target.value); setError(""); }}
-            >
+            <select className="custom-select" value={handType} onChange={e => { setHandType(e.target.value); setError(""); }}>
               {HAND_TYPES.map(h => <option key={h.type} value={h.type}>{h.label}</option>)}
             </select>
             <ChevronIcon />
           </div>
         </div>
 
-        {/* Rank 1 */}
         <div className="field-group">
-          <label className="field-label">{rank1Label}</label>
+          <label className="field-label">
+            {handType === "full_house" ? "Three of" : handType === "two_pair" ? "High pair" : "Rank"}
+          </label>
           <div className="select-wrap">
             <select className="custom-select" value={rank1} onChange={e => { setRank1(e.target.value); setError(""); }}>
               {rankOpts.map(r => <option key={r} value={r}>{RANK_FULL[r]}</option>)}
@@ -210,10 +263,9 @@ function ClaimBuilder({ currentClaim, onSubmit }) {
           </div>
         </div>
 
-        {/* Rank 2 */}
         {htDef.needsRanks === 2 && (
           <div className="field-group">
-            <label className="field-label">{rank2Label}</label>
+            <label className="field-label">{handType === "full_house" ? "Pair of" : "Low pair"}</label>
             <div className="select-wrap">
               <select className="custom-select" value={rank2} onChange={e => { setRank2(e.target.value); setError(""); }}>
                 {rankOpts.map(r => <option key={r} value={r}>{RANK_FULL[r]}</option>)}
@@ -223,31 +275,24 @@ function ClaimBuilder({ currentClaim, onSubmit }) {
           </div>
         )}
 
-        {/* Suit picker */}
         {htDef.needsSuit && (
           <div className="field-group">
             <label className="field-label">Suit</label>
             <div className="suit-row">
               {SUITS.map(s => (
-                <button
-                  key={s}
-                  type="button"
-                  className={`suit-btn suit-${s}${suit === s ? " active" : ""}`}
+                <button key={s} type="button"
+                  className={`suit-btn suit-${s} ${suit === s ? "active" : ""}`}
                   onClick={() => setSuit(s)}
-                >
-                  {SUIT_SYM[s]}
-                </button>
+                >{SUIT_SYM[s]}</button>
               ))}
             </div>
           </div>
         )}
 
         <button className="btn btn-gold" onClick={submit}>
-          Claim It
-          <ArrowRightIcon />
+          Claim It <ArrowRightIcon />
         </button>
       </div>
-
       {error && <div className="builder-error">{error}</div>}
     </div>
   );
@@ -262,36 +307,28 @@ function LogPanel({ logs }) {
       {logs.length === 0
         ? <span className="log-empty">Game log will appear here…</span>
         : logs.map((l,i) => {
-            const isEvent = l.includes("BS") || l.includes("❌") || l.includes("✅") || l.includes("💀") || l.includes("🏆") || l.includes("🎲");
-            return <div key={i} className={`log-entry${isEvent ? " log-event" : ""}`}>{l}</div>;
+            const isEvent = /BS|❌|✅|💀|🏆|🎲/.test(l);
+            return <div key={i} className={`log-entry ${isEvent ? "log-event" : ""}`}>{l}</div>;
           })
       }
     </div>
   );
 }
 
-// ─── Icon helpers ─────────────────────────────────────────────────────────────
+// ─── Icons ────────────────────────────────────────────────────────────────────
 function ChevronIcon() {
-  return (
-    <svg className="chevron" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  );
+  return <svg className="chevron" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
 function ArrowRightIcon() {
-  return (
-    <svg className="arrow-right" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  );
+  return <svg className="arrow-right" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
 
 // ─── Join Screen ──────────────────────────────────────────────────────────────
 function JoinScreen({ onConnect, extErr = "" }) {
-  const [name, setName]         = useState("");
-  const [url, setUrl]           = useState(DEFAULT_WS);
-  const [showAdv, setShowAdv]   = useState(false);
-  const [err, setErr]           = useState("");
+  const [name, setName]       = useState("");
+  const [url, setUrl]         = useState(DEFAULT_WS);
+  const [showAdv, setShowAdv] = useState(false);
+  const [err, setErr]         = useState("");
 
   function go() {
     if (!name.trim()) return setErr("Please enter a name");
@@ -305,45 +342,22 @@ function JoinScreen({ onConnect, extErr = "" }) {
         <div className="join-icon">🃏</div>
         <h1 className="join-title">BS Poker</h1>
         <p className="join-sub">Bluff your friends. Call their bluffs.</p>
-
         <div className="join-fields">
-          <input
-            className="text-input"
-            placeholder="Your name"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && go()}
-            autoFocus
-          />
-
-          <button
-            className="adv-toggle"
-            type="button"
-            onClick={() => setShowAdv(v => !v)}
-          >
+          <input className="text-input" placeholder="Your name" value={name}
+            onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && go()} autoFocus />
+          <button className="adv-toggle" type="button" onClick={() => setShowAdv(v => !v)}>
             {showAdv ? "▲" : "▼"} Advanced
           </button>
-
           {showAdv && (
-            <input
-              className="text-input text-input-sm"
-              placeholder={`Server URL (default: ${DEFAULT_WS})`}
-              value={url}
-              onChange={e => setUrl(e.target.value)}
-            />
+            <input className="text-input text-input-sm" placeholder={`Server URL`}
+              value={url} onChange={e => setUrl(e.target.value)} />
           )}
-
           {(err || extErr) && <p className="join-error">{err || extErr}</p>}
-
           <button className="btn btn-primary btn-full" onClick={go}>
-            Join Table
-            <ArrowRightIcon />
+            Join Table <ArrowRightIcon />
           </button>
         </div>
-
-        <p className="join-hint">
-          Run <code>node server.js</code> and share your IP with friends.
-        </p>
+        <p className="join-hint">Run <code>node server.js</code> and share your IP.</p>
       </div>
     </div>
   );
@@ -351,13 +365,13 @@ function JoinScreen({ onConnect, extErr = "" }) {
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [joined,     setJoined]     = useState(false);
-  const [myId,       setMyId]       = useState(null);
-  const [state,      setState]      = useState(null);
-  const [logs,       setLogs]       = useState([]);
-  const [connErr,    setConnErr]    = useState("");
-  const ws        = useRef(null);
-  const savedId   = useRef(localStorage.getItem("bspoker_id"));
+  const [joined,  setJoined]  = useState(false);
+  const [myId,    setMyId]    = useState(null);
+  const [state,   setState]   = useState(null);
+  const [logs,    setLogs]    = useState([]);
+  const [connErr, setConnErr] = useState("");
+  const ws      = useRef(null);
+  const savedId = useRef(localStorage.getItem("bspoker_id"));
 
   const addLog = useCallback(msg => setLogs(l => [...l.slice(-100), msg]), []);
 
@@ -366,10 +380,8 @@ export default function App() {
     const id = savedId.current || Math.random().toString(36).slice(2);
     savedId.current = id;
     localStorage.setItem("bspoker_id", id);
-
     const socket = new WebSocket(serverUrl);
     ws.current = socket;
-
     socket.onopen    = () => socket.send(JSON.stringify({ type:"join", name:playerName, id }));
     socket.onmessage = e => {
       const msg = JSON.parse(e.data);
@@ -380,6 +392,12 @@ export default function App() {
     };
     socket.onclose = () => { setJoined(false); addLog("Disconnected."); };
     socket.onerror = () => setConnErr("Can't connect — is the server running?");
+
+    // keepalive ping every 25s
+    const ping = setInterval(() => {
+      if (socket.readyState === 1) socket.send(JSON.stringify({ type:"ping" }));
+    }, 25000);
+    socket.onclose = () => { clearInterval(ping); setJoined(false); addLog("Disconnected."); };
   }
 
   const send = useCallback(msg => {
@@ -388,22 +406,19 @@ export default function App() {
 
   if (!joined) return <JoinScreen onConnect={connect} extErr={connErr} />;
 
-  // ── Derived state ──────────────────────────────────────────────────────────
-  const me            = state?.players?.find(p => p.id === myId);
-  const active        = state?.players?.filter(p => !p.eliminated) || [];
-  const myTurnPlayer  = active[state?.turnIdx];
-  const isMyTurn      = myTurnPlayer?.id === myId;
-  const isReveal      = state?.phase === "reveal";
-  const isPlaying     = state?.phase === "playing" || isReveal;
-  const isLobby       = !state || state.phase === "lobby";
-  const canStart      = (state?.players?.length || 0) >= 2 && isLobby;
-  const canBS         = isPlaying && state?.currentClaim
-                        && state?.lastClaimPlayerId !== myId && !me?.eliminated && !isReveal;
-  const claimerName   = state?.players?.find(p => p.id === state?.lastClaimPlayerId)?.name;
+  const me           = state?.players?.find(p => p.id === myId);
+  const active       = state?.players?.filter(p => !p.eliminated) || [];
+  const myTurnPlayer = active[state?.turnIdx];
+  const isMyTurn     = myTurnPlayer?.id === myId;
+  const isReveal     = state?.phase === "reveal";
+  const isPlaying    = state?.phase === "playing" || isReveal;
+  const isLobby      = !state || state.phase === "lobby";
+  const canStart     = (state?.players?.length || 0) >= 2 && isLobby;
+  const canBS        = isPlaying && state?.currentClaim
+                       && state?.lastClaimPlayerId !== myId && !me?.eliminated && !isReveal;
 
   return (
     <div className="game-root">
-      {/* ── Header ── */}
       <header className="game-header">
         <span className="header-logo">🃏 BS Poker</span>
         <div className="header-right">
@@ -412,56 +427,25 @@ export default function App() {
             {state?.players?.length || 0} players · {state?.phase || "lobby"}
           </span>
           {state?.phase !== "lobby" && (
-            <button className="btn btn-ghost btn-sm" onClick={() => send({ type:"restart" })}>
-              Reset
-            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => send({ type:"restart" })}>Reset</button>
           )}
-          <button className="btn btn-ghost btn-sm" onClick={() => { ws.current?.close(); setJoined(false); }}>
-            Leave
-          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { ws.current?.close(); setJoined(false); }}>Leave</button>
         </div>
       </header>
 
-      {/* ── Content ── */}
       <main className="game-main">
+        {/* Poker table */}
+        <PokerTable
+          players={state?.players || []}
+          myId={myId}
+          turnIdx={state?.turnIdx}
+          lastClaimPlayerId={state?.lastClaimPlayerId}
+          isReveal={isReveal}
+          isPlaying={isPlaying}
+          currentClaim={state?.currentClaim}
+        />
 
-        {/* Current claim banner */}
-        {state?.currentClaim && (
-          <div className={`claim-banner${isReveal ? " claim-banner-reveal" : ""}`}>
-            <div className="claim-banner-left">
-              <span className="claim-label">Current Claim</span>
-              <span className="claim-text">{formatClaim(state.currentClaim)}</span>
-              <span className="claim-by">by {claimerName}</span>
-            </div>
-            {canBS && (
-              <button className="btn btn-bs" onClick={() => send({ type:"bs" })}>
-                🚨 Call BS
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* Players */}
-        <section className="players-section">
-          {state?.players?.map(p => {
-            const ai = active.findIndex(a => a.id === p.id);
-            return (
-              <PlayerChip
-                key={p.id}
-                player={p}
-                isMe={p.id === myId}
-                isTurn={!p.eliminated && ai === state.turnIdx && isPlaying && !isReveal}
-                isLastClaimer={p.id === state.lastClaimPlayerId}
-                isReveal={isReveal}
-              />
-            );
-          })}
-          {(!state?.players?.length) && (
-            <p className="waiting-msg">Waiting for players to join…</p>
-          )}
-        </section>
-
-        {/* My hand */}
+        {/* My hand (large cards at bottom) */}
         {me?.cards?.length > 0 && (
           <section className="hand-section">
             <span className="section-label">Your Hand</span>
@@ -479,42 +463,39 @@ export default function App() {
           </div>
         )}
 
-        {/* Claim builder (my turn) */}
-        {isMyTurn && !isReveal && isPlaying && (
-          <ClaimBuilder
-            currentClaim={state?.currentClaim}
-            onSubmit={claim => send({ type:"claim", claim })}
-          />
-        )}
-
-        {/* Waiting + BS option (not my turn) */}
-        {!isMyTurn && isPlaying && !isReveal && myTurnPlayer && (
-          <div className="waiting-turn">
-            <p className="waiting-name">
-              Waiting for <strong>{myTurnPlayer.name}</strong> to act…
-            </p>
-            {canBS && (
-              <button className="btn btn-bs" onClick={() => send({ type:"bs" })}>
-                🚨 Call BS
-              </button>
-            )}
+        {/* BS button — shown when not my turn and a claim exists */}
+        {canBS && !isReveal && (
+          <div className="bs-zone">
+            <button className="btn btn-bs btn-bs-big" onClick={() => send({ type:"bs" })}>
+              🚨 Call BS
+            </button>
           </div>
         )}
 
-        {/* Lobby controls */}
+        {/* Claim builder */}
+        {isMyTurn && !isReveal && isPlaying && (
+          <ClaimBuilder currentClaim={state?.currentClaim} onSubmit={claim => send({ type:"claim", claim })} />
+        )}
+
+        {/* Waiting indicator */}
+        {!isMyTurn && isPlaying && !isReveal && myTurnPlayer && !canBS && (
+          <div className="waiting-turn">
+            Waiting for <strong>{myTurnPlayer.name}</strong>…
+          </div>
+        )}
+
+        {/* Lobby */}
         {isLobby && (
           <div className="lobby-actions">
             {canStart
               ? <button className="btn btn-primary" onClick={() => send({ type:"start" })}>
-                  Start Game — {state.players.length} players
-                  <ArrowRightIcon />
+                  Start Game — {state.players.length} players <ArrowRightIcon />
                 </button>
               : <p className="lobby-hint">Need at least 2 players to start…</p>
             }
           </div>
         )}
 
-        {/* Log */}
         <LogPanel logs={logs} />
       </main>
     </div>
