@@ -37,7 +37,7 @@ const HAND_RANK = {
 function claimScore(claim) {
   const base = HAND_RANK[claim.type] * 100000;
   const r = claim.ranks || [];
-  const v0 = r[0] ? RANK_VAL[r[0]] : 0;
+  var v0 = r[0] ? RANK_VAL[r[0]] : 0;
   const v1 = r[1] ? RANK_VAL[r[1]] : 0;
 
   if (claim.type === "flush") {
