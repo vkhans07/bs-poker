@@ -397,7 +397,7 @@ export default function App() {
   const isPlaying     = state?.phase === "playing" || isReveal;
   const isLobby       = !state || state.phase === "lobby";
   const canStart      = (state?.players?.length || 0) >= 2 && isLobby;
-  const canBS         = isPlaying && !isMyTurn && state?.currentClaim
+  const canBS         = isPlaying && state?.currentClaim
                         && state?.lastClaimPlayerId !== myId && !me?.eliminated && !isReveal;
   const claimerName   = state?.players?.find(p => p.id === state?.lastClaimPlayerId)?.name;
 
